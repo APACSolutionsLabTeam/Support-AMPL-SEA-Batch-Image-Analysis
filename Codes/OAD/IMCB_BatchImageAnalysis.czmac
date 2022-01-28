@@ -1,0 +1,192 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Script>
+  <Context>Zen26</Context>
+  <Version>1.0</Version>
+  <Language>Python</Language>
+  <Text>#######################################################
+## IMAGE ANALYSIS OF IMAGES (INCLUDING MULTISCENE IMAGES)
+## IN MULTIPLE FOLDERS
+##
+## Macro name: IMCB_BatchImageAnalysis.czmac
+## Required files: *.czias files
+##
+## Author: APAC Digital Solutions Team
+##
+## GUI TO SELECT THE FOLDERS AND IMAGE ANALYSIS SETTINGS
+## BATCH MODE IMAGE ANALYSIS
+##
+## Copyright (c) 2021 by Carl Zeiss Microscopy GmbH.
+## Permission is granted to use, modify and distribute this code,
+## as long as this copyright notice remains part of the code.
+#######################################################
+
+
+## Remove all open documents
+Zen.Application.Documents.RemoveAll()
+
+## Import required libraries
+from System.IO import File, Directory, Path, FileInfo
+import sys, os
+#import os.path
+import csv
+import shutil
+
+## User-defined function to create a folder
+def create_directory(createFolder):
+    ## check directory exists or not and create a new one
+    if os.path.exists(createFolder):
+        shutil.rmtree(createFolder)
+        os.mkdir(createFolder)
+       
+    else:
+        os.mkdir(createFolder)
+
+## User-defined function to get short names(without folder path) for the analysis setting
+def getshortfiles(filelist):
+    files_short = []
+    for short in filelist:
+        files_short.append(Path.GetFileName(short))
+    
+    return files_short
+
+## clear the macro editor console output
+Zen.Application.MacroEditor.ClearMessages()
+
+## Check the location of folder where experiment setups and image analysis settings are stored
+docfolder = Zen.Application.Environment.GetFolderPath(ZenSpecialFolder.UserDocuments)
+#print(docfolder)
+## Get list with all existing image analysis setups and a short version of that list
+ipfiles = Directory.GetFiles(Path.Combine(docfolder, 'Image Analysis Settings'),'*.czias')
+ipfiles_short = getshortfiles(ipfiles)
+
+## Set up the GUI dialog window
+GUIDialog = ZenWindow()
+GUIDialog.Initialize('Batch Mode Image Analysis')
+## Add components to GUI dialog
+GUIDialog.AddIntegerRange('num_folders','Select number of folders to be analyzed',1,1,100)
+GUIDialog.AddFolderBrowser('destFolder','Destination folder to save analyzed data','C:\\OAD\\Output\\CSV Tables')
+## Show the GUI window
+result = GUIDialog.Show()
+
+## Print message if the macro is cancelled
+if result.HasCanceled:
+    message = 'Macro was canceled by user.'
+    print(message)
+    raise SystemExit
+##
+## Else execute the macro
+else:
+    ## Get the values from GUI dialog and store them
+    num_folders = int(result.GetValue('num_folders'))
+    destFolder = str(result.GetValue('destFolder'))
+    ## New GUI to get folder names and image analysis settings
+    GUIDialog_2 = ZenWindow()
+    GUIDialog_2.Initialize('Select the folders and corresponding Image Analysis setting')
+    for i in range(num_folders):
+        GUIDialog_2.AddFolderBrowser('imgFolder'+str(i+1),'Image folder'+str(i+1),'C:\\OAD\\Output\\CZI Images', str(i+1), '0')
+        GUIDialog_2.AddDropDown('ias_name'+str(i+1), 'Image Analysis Workflow'+str(i+1), ipfiles_short, 2, str(i+1), '1')
+    result_2 = GUIDialog_2.Show()
+    
+    ## Process GUI Inputs 
+    strFolderPath = []
+    strIAS = []
+    for i in range(num_folders):
+           strFolderPath_temp    = str(result_2.GetValue("imgFolder"+str(i+1)))
+           strFolderPath.append(strFolderPath_temp)
+           strIAS_temp    = str(result_2.GetValue("ias_name"+str(i+1)))
+           strIAS.append(strIAS_temp)
+                     
+           ## get files
+           files = Directory.GetFiles(strFolderPath_temp)
+           print(files)
+            ## Check, if images exists
+           if files.Length == 0: 
+                strMessage = 'Images do not exist!\nPlease restart macro!'
+                sys.exit(strMessage)
+           
+           ## loop over all images in the folder
+           for i in range(0,files.Length):
+                file = files[i]
+                fileInfo = FileInfo(file)
+                image_basename_noext = os.path.splitext(fileInfo.Name)[0]
+                folder_name = os.path.basename(os.path.dirname(file))
+                PathAndFile = Path.Combine(strFolderPath_temp, fileInfo.Name)
+                image = Zen.Application.LoadImage(PathAndFile,False)
+                # The following command has to be activated, if each image should be displayed
+                Zen.Application.Documents.Add(image)
+                
+                ias=ZenImageAnalysisSetting()
+                ias.Load(strIAS_temp)
+                create_directory(destFolder + r'/AnalysisResults/' + folder_name + r'/' + image_basename_noext)
+                ## Check whether image is multiscene image
+                if (image.Bounds.IsMultiScene is True):
+                    
+                    imgs = Zen.Processing.Utilities.SplitScenesToArray(image)
+                    scene_num = 0
+                                      
+                    for img in imgs:
+                        scene_num = scene_num+1
+                        ## Analyze the image to table (generates list)
+                        list = Zen.Analyzing.AnalyzeToTable(img,ias)
+                        
+                        ## Create directory for each scene analysis output files
+                        create_directory(destFolder + r'/AnalysisResults/' + folder_name + r'/'+ image_basename_noext + '/Scene_' + str(scene_num))
+                        
+                        for i in range (0,list.Count): 
+                        
+                            listName  = list[i].FileName
+                            #print(listName)
+                            
+                            ## Extract and show tables of all classes
+                            table = Zen.Analyzing.GetTable(listName,list)
+                            Zen.Application.Documents.Add(table)
+                            
+                            ## define table path and file name
+                            tableFileName  = Path.Combine(destFolder + r'/AnalysisResults/' + folder_name + r'/'+ image_basename_noext + '/Scene_' + str(scene_num),listName +'_Scene'+str(scene_num)+ '.csv')
+                            ## print(tableFileName)
+                            
+                            ## save table
+                            table.Save(tableFileName)
+                else: 
+                
+                    ## Analyze the image (opens Analysis view)
+                    Zen.Analyzing.Analyze(image,ias)
+                    
+                    ## Create data list with results for all regions
+                    regsTable = Zen.Analyzing.CreateRegionsTable(image)
+                    #Zen.Application.Documents.Add(regsTable)
+                    
+                    ## Create data list with results for each region
+                    regTable = Zen.Analyzing.CreateRegionTable(image)
+                    #Zen.Application.Documents.Add(regTable)
+                    
+                    ## Save regions data list automatically
+                    regsTableName = regsTable.Name
+                   
+                    regsFileName = Path.Combine(destFolder+r'/AnalysisResults/'+ folder_name + r'/'+image_basename_noext,regsTableName + '.csv')
+                    regsTable.Save(regsFileName)
+                    
+                    ## Save region data list automatically
+                    regTableName = regTable.Name
+                    regFileName = Path.Combine(destFolder+r'/AnalysisResults/'+ folder_name + r'/'+image_basename_noext,regTableName + '.csv')
+                    regTable.Save(regFileName)
+
+                ## Close image (otherwise it cannot be deleted in explorer)
+                image.Close()
+                ##
+
+## ZEN message about where the analysis output files are saved
+text = 'Data list are saved in: ' + destFolder +r'\AnalysisResults'
+Zen.Application.Pause(text)
+
+## Remove all open documents
+Zen.Application.Documents.RemoveAll()
+##
+######################################################################################
+</Text>
+  <Author></Author>
+  <Description></Description>
+  <Keywords></Keywords>
+  <Row>107</Row>
+  <Column>68</Column>
+</Script>
